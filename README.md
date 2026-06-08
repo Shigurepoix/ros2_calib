@@ -24,6 +24,8 @@
 
 **ros2_calib** is a multi-sensor calibration tool for ROS 2 that provides intuitive graphical interfaces for performing precise extrinsic calibration between different sensor types. The tool supports both **LiDAR-to-Camera** and **LiDAR-to-LiDAR** calibration workflows. Built with PySide6, it operates on recorded rosbag data without requiring a live ROS 2 environment. It supports reading `/tf_static` transforms from rosbags and allows users to quickly calibrate and export the resulting transformation directly into URDF format. Although it is a manual calibration tool, we made the expierence that it is faster to use than a target-based calibration method and is more accurate than automatic methods.
 
+✨ **New Feature**: This version introduces native support for **Scaramuzza's OCamCalib fisheye model**, allowing direct point cloud projection onto raw, highly distorted dual-fisheye frames (e.g., Insta360) without prior image rectification.
+
 ## Screenshots
 
 ### Start Window with Calibration Type Selection
@@ -52,6 +54,7 @@
 - **🧠 Smart Algorithms**: RANSAC-based PnP solver with Scipy least-squares refinement
 - **🧹 Point Cloud Cleaning**: Advanced occlusion removal using the RePLAy algorithm
 - **⌨️ Keyboard Shortcuts**: ESC to cancel, Backspace to delete, Enter to confirm
+- **🐟 Dual-Fisheye Support**: Native parsing of OCamCalib `.json` parameters. Supports left/right unstitched frame cropping.
 
 ### LiDAR-to-LiDAR Calibration
 - **🎮 3D Interactive Interface**: Open3D-based point cloud visualization
@@ -65,6 +68,8 @@
 - **💾 Offline Processing**: Works with .mcap rosbag files - no live ROS 2 required
 - **🎨 Easy-to-Use UI**: Organized sections with responsive design
 - **📱 Multi-Calibration Types**: Seamless switching between different calibration workflows
+
+
 
 ## Installation
 
@@ -242,6 +247,18 @@ We welcome contributions! Please see our [Contributing Guidelines](CONTRIBUTING.
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## Acknowledgements and Credits
+
+**Modifications in this version:**
+This version was adapted by **Junmin Liu** at the **GRASP Laboratory, University of Pennsylvania** to support specialized robotic platforms and dual-lens 360 cameras. Key additions include:
+* Added Scaramuzza OCamCalib polynomial projection logic (`ros_utils.py`).
+* Integrated `py-OCamCalib` JSON parsing and dynamic image cropping.
+* Implemented physical FOV-based spherical point filtering.
+* Refactored ROS bag processing to support datasets without `CameraInfo`.
+
+**AI Assistance Declaration:**
+Portions of the code refactoring, particularly the PySide6 UI adjustments and the integration of the OCamCalib mathematical model, were developed and debugged with the assistance of Large Language Models (Google Gemini). The developers have reviewed, tested, and assume full responsibility for the integrated code.
 
 ## Citation
 

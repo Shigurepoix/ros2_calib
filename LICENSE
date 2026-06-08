@@ -1,6 +1,11 @@
 MIT License
 
 Copyright (c) 2025 Institute for Automotive Engineering (ika), RWTH Aachen University
+Copyright (c) 2026 GRASP Lab, University of Pennsylvania (Added Scaramuzza OCamCalib Fisheye Support)
+
+Acknowledgement: Portions of the modifications in this file, including 
+the adaptation for dual-fisheye datasets and unstitched frame processing, 
+were developed with the assistance of AI (Google Gemini and ChatGPT).
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

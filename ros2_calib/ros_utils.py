@@ -1,6 +1,11 @@
 # MIT License
 #
 # Copyright (c) 2025 Institute for Automotive Engineering (ika), RWTH Aachen University
+# Copyright (c) 2026 GRASP Lab, University of Pennsylvania (Added Scaramuzza OCamCalib Fisheye Support)
+#
+# Acknowledgement: Portions of the modifications in this file, including 
+# the adaptation for dual-fisheye datasets and unstitched frame processing, 
+# were developed with the assistance of AI (Google Gemini and ChatGPT).
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
@@ -330,3 +335,70 @@ def numpy_to_transform(arr):
         translation=Vector3(x=trans[0], y=trans[1], z=trans[2]),
         rotation=Quaternion(x=quat[0], y=quat[1], z=quat[2], w=quat[3]),
     )
+
+from dataclasses import dataclass, field
+import numpy as np
+
+@dataclass
+class OCamModel:
+    pol: np.ndarray = field(default_factory=lambda: np.array([]))
+    invpol: np.ndarray = field(default_factory=lambda: np.array([]))
+    center: tuple = (0.0, 0.0)
+    affine: tuple = (1.0, 0.0, 0.0)
+    width: int = 0
+    height: int = 0
+
+    def project_points(self, pts_3d):
+        """Project 3D points (camera frame) to fisheye image plane using the Scaramuzza OCamCalib model.
+
+        Args:
+            pts_3d: (N, 3) array of 3-D points **already in the camera coordinate frame**.
+
+        Returns:
+            (N, 2) array of pixel coordinates [u, v].
+
+        Model convention (OCamCalib / Scaramuzza):
+            - ``invpol`` is the inverse polynomial mapping angle from optical axis θ → sensor radius ρ
+              where θ = arccos(z / ‖p‖) is the angle from the optical axis
+              (0 on optical axis, π/2 at 90° off-axis), and ρ is in pixels from the
+              distortion centre.
+            - ``affine`` = (c, d, e) is the 2×2 stretch / affine matrix [[c, d], [e, 1]].
+            - ``center`` = (xc, yc) is the distortion centre in pixels.
+        """
+        x, y, z = pts_3d[:, 0], pts_3d[:, 1], pts_3d[:, 2]
+        
+        # 3D norm to calculate normalized z for arccos
+        norm_3d = np.sqrt(x*x + y*y + z*z)
+        norm_3d_safe = np.where(norm_3d < 1e-9, 1.0, norm_3d)
+        z_n = z / norm_3d_safe
+
+        # Angle from optical axis (0 on-axis, pi/2 at 90 deg off-axis)
+        theta = np.arccos(np.clip(z_n, -1, 1))
+
+        # Evaluate invpol via np.polyval (descending order)
+        if len(self.invpol) == 0:
+            rho = np.zeros_like(theta)
+        else:
+            rho = np.polyval(self.invpol, theta)
+
+        # 2D norm in XY plane for unit direction vector in the (x, y) sensor plane
+        xy_norm = np.sqrt(x * x + y * y)
+        ON_AXIS = xy_norm < 1e-9
+        xy_norm_safe = np.where(ON_AXIS, 1.0, xy_norm)
+
+        # Unit direction vector in the (x, y) sensor plane
+        dx = np.where(ON_AXIS, 0.0, x / xy_norm_safe)
+        dy = np.where(ON_AXIS, 0.0, y / xy_norm_safe)
+
+        # Undistorted sensor coordinates (relative to distortion centre)
+        u = dx * rho
+        v = dy * rho
+
+        # Apply affine / stretch matrix and add distortion centre
+        c, d, e = self.affine
+        xc, yc = self.center
+
+        u_pix = c * u + d * v + xc
+        v_pix = e * u + v + yc
+
+        return np.vstack((u_pix, v_pix)).T

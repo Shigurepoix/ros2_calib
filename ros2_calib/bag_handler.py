@@ -1,6 +1,11 @@
 # MIT License
 #
 # Copyright (c) 2025 Institute for Automotive Engineering (ika), RWTH Aachen University
+# Copyright (c) 2026 GRASP Lab, University of Pennsylvania (Added Scaramuzza OCamCalib Fisheye Support)
+#
+# Acknowledgement: Portions of the modifications in this file, including 
+# the adaptation for dual-fisheye datasets and unstitched frame processing, 
+# were developed with the assistance of AI (Google Gemini and ChatGPT).
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
@@ -30,7 +35,6 @@ from rosbags.typesys import Stores, get_typestore
 from . import ros_utils
 
 
-# --- Helper functions (get_topic_info, etc.) remain the same ---
 def get_topic_info(bag_file, ros_version="JAZZY") -> List[tuple]:
     """Get topic information from bag file."""
     topics = []
@@ -202,13 +206,13 @@ def read_synchronized_image_cloud(
     frame_samples: int = 6,
     ros_version: str = "JAZZY",
 ) -> Dict:
-    """Synchronize image, point cloud, and camera info by nearest timestamp."""
+    """Synchronize image, point cloud, and (optionally) camera info by nearest timestamp."""
     ros_store = getattr(Stores, f"ROS2_{ros_version}")
     typestore = get_typestore(ros_store)
 
     img_norm = image_topic.lstrip("/")
     pc_norm = pointcloud_topic.lstrip("/")
-    cam_norm = camerainfo_topic.lstrip("/")
+    cam_norm = camerainfo_topic.lstrip("/") if camerainfo_topic else ""
     max_diff_ns = int(max_time_diff * 1e9)
 
     def next_msg(it):
@@ -226,32 +230,39 @@ def read_synchronized_image_cloud(
                 img_conn = c
             elif norm_topic == pc_norm:
                 pc_conn = c
-            elif norm_topic == cam_norm:
+            elif camerainfo_topic and norm_topic == cam_norm:
                 cam_conn = c
             elif "tf_static" in c.topic:
                 tf_connections.append(c)
 
-        if not img_conn or not pc_conn or not cam_conn:
-            missing = [
-                name
-                for name, conn in zip(
-                    ["image", "pointcloud", "camera_info"], [img_conn, pc_conn, cam_conn]
-                )
-                if conn is None
-            ]
+        # Validate mandatory connections
+        required_conns = [img_conn, pc_conn]
+        names = ["image", "pointcloud"]
+        if camerainfo_topic:
+            required_conns.append(cam_conn)
+            names.append("camera_info")
+
+        missing = [name for name, conn in zip(names, required_conns) if conn is None]
+        if missing:
             raise ValueError(f"Missing connections for: {', '.join(missing)}")
 
         img_iter = reader.messages(connections=[img_conn])
         pc_iter = reader.messages(connections=[pc_conn])
-        cam_iter = reader.messages(connections=[cam_conn])
+        
+        # Only initialize camera info iterator if we need it
+        cam_iter = reader.messages(connections=[cam_conn]) if cam_conn else None
 
         img_state = next_msg(img_iter)
         pc_state = next_msg(pc_iter)
+        
         cam_prev = None
-        cam_state = next_msg(cam_iter)
+        cam_state = next_msg(cam_iter) if cam_iter else None
 
         def closest_camera_info(target_time_ns):
             nonlocal cam_prev, cam_state
+            if not cam_iter:
+                return None, 0, target_time_ns
+
             while cam_state and cam_state[1] < target_time_ns:
                 cam_prev = cam_state
                 cam_state = next_msg(cam_iter)
@@ -279,33 +290,39 @@ def read_synchronized_image_cloud(
             if diff <= max_diff_ns:
                 img_msg = reader.deserialize(raw_img, img_conn.msgtype)
                 pc_msg = reader.deserialize(raw_pc, pc_conn.msgtype)
+                
                 cam_raw, cam_diff, cam_time = closest_camera_info(t_img)
-                if cam_raw is None:
+                
+                # If we explicitly requested CameraInfo but ran out of messages, stop matching
+                if camerainfo_topic and cam_raw is None:
                     break
-                cam_msg = reader.deserialize(cam_raw, cam_conn.msgtype)
+                    
+                cam_msg = reader.deserialize(cam_raw, cam_conn.msgtype) if cam_raw else None
 
-                pairs.append(
-                    {
-                        "image": {
-                            "timestamp": t_img,
-                            "data": img_msg,
-                            "topic_type": topics_to_read[image_topic],
-                            "time_delta_ns": diff,
-                        },
-                        "pointcloud": {
-                            "timestamp": t_pc,
-                            "data": pc_msg,
-                            "topic_type": topics_to_read[pointcloud_topic],
-                            "time_delta_ns": diff,
-                        },
-                        "camera_info": {
-                            "timestamp": cam_time if cam_time is not None else t_img,
-                            "data": cam_msg,
-                            "topic_type": topics_to_read[camerainfo_topic],
-                            "time_delta_ns": cam_diff,
-                        },
+                pair_data = {
+                    "image": {
+                        "timestamp": t_img,
+                        "data": img_msg,
+                        "topic_type": topics_to_read[image_topic],
+                        "time_delta_ns": diff,
+                    },
+                    "pointcloud": {
+                        "timestamp": t_pc,
+                        "data": pc_msg,
+                        "topic_type": topics_to_read[pointcloud_topic],
+                        "time_delta_ns": diff,
                     }
-                )
+                }
+                
+                if camerainfo_topic:
+                    pair_data["camera_info"] = {
+                        "timestamp": cam_time if cam_time is not None else t_img,
+                        "data": cam_msg,
+                        "topic_type": topics_to_read.get(camerainfo_topic, ""),
+                        "time_delta_ns": cam_diff,
+                    }
+                    
+                pairs.append(pair_data)
 
                 img_state = next_msg(img_iter)
                 pc_state = next_msg(pc_iter)
@@ -322,8 +339,9 @@ def read_synchronized_image_cloud(
         frame_samples_dict = {
             image_topic: [p["image"] for p in pairs],
             pointcloud_topic: [p["pointcloud"] for p in pairs],
-            camerainfo_topic: [p["camera_info"] for p in pairs],
         }
+        if camerainfo_topic:
+            frame_samples_dict[camerainfo_topic] = [p["camera_info"] for p in pairs]
 
         messages = {"frame_samples": frame_samples_dict}
 
@@ -501,6 +519,7 @@ class RosbagProcessingWorker(QThread):
                 image_topic = self.selected_topics_data["image_topic"]
                 pointcloud_topic = self.selected_topics_data["pointcloud_topic"]
                 camerainfo_topic = self.selected_topics_data["camerainfo_topic"]
+                
                 raw_messages = read_synchronized_image_cloud(
                     self.bag_file,
                     image_topic,
