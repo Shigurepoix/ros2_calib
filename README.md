@@ -1,8 +1,8 @@
 # ros2_calib
 
-## Scaramuzza Fisheye Support — Contributions by Junmin Liu
+## Contributions in This Version
 
-This version was adapted by **Junmin Liu** at the **GRASP Laboratory, University of Pennsylvania** to support specialized robotic platforms and dual-lens 360 cameras. The Scaramuzza OCamCalib model projects LiDAR points directly onto raw fisheye images (e.g., Insta360) without prior image rectification. Key additions include:
+This version adds Scaramuzza fisheye support for specialized robotic platforms and dual-lens 360 cameras. The Scaramuzza OCamCalib model projects LiDAR points directly onto raw fisheye images (e.g., Insta360) without prior image rectification. Key additions include:
 
 * Added Scaramuzza OCamCalib polynomial projection logic (`ros_utils.py`).
 * Integrated `py-OCamCalib` JSON parsing and dynamic image cropping.
