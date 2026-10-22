@@ -253,3 +253,106 @@ class LiDARCleaner:
         visible_points_filtered[tomask_all] = False
 
         return visible_points_filtered
+
+
+class FisheyeLiDARCleaner:
+    """Run the pinhole occlusion cleaner on perspective faces of a fisheye view.
+
+    RePLAy's epipolar construction is defined for a perspective camera.  An OCamCalib
+    image is not perspective, so feeding its dummy ``CameraInfo.k`` to ``LiDARCleaner``
+    produces an empty (or incorrect) mask.  A cubemap preserves perspective geometry on
+    each face and lets us reuse the same cleaning algorithm over the full fisheye field of
+    view, including rays more than 90 degrees from the optical axis.
+    """
+
+    _FACE_ROTATIONS = (
+        # Camera-frame direction mapped to the positive Z axis of each virtual camera.
+        np.array([[0, 0, -1], [0, 1, 0], [1, 0, 0]], dtype=np.float32),  # +X
+        np.array([[0, 0, 1], [0, 1, 0], [-1, 0, 0]], dtype=np.float32),  # -X
+        np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0]], dtype=np.float32),  # +Y
+        np.array([[1, 0, 0], [0, 0, 1], [0, -1, 0]], dtype=np.float32),  # -Y
+        np.eye(3, dtype=np.float32),  # +Z
+        np.array([[-1, 0, 0], [0, 1, 0], [0, 0, -1]], dtype=np.float32),  # -Z
+    )
+
+    def __init__(
+        self,
+        ocam_model,
+        extrinsic_LiDAR2Cam,
+        LiDARPoints3D,
+        height,
+        width,
+        fov_limit_deg=105.0,
+        cube_size=512,
+    ):
+        self.ocam_model = ocam_model
+        self.extrinsic_LiDAR2Cam = np.asarray(extrinsic_LiDAR2Cam, dtype=np.float32)
+        self.LiDARPoints3D = np.asarray(LiDARPoints3D, dtype=np.float32)
+        self.height = int(height)
+        self.width = int(width)
+        self.fov_limit = np.radians(float(fov_limit_deg))
+        self.cube_size = int(cube_size)
+
+    def _visible_fisheye_points(self):
+        rotation = self.extrinsic_LiDAR2Cam[:, :3]
+        translation = self.extrinsic_LiDAR2Cam[:, 3]
+        points_cam = (rotation @ self.LiDARPoints3D).T + translation
+        projected = np.asarray(self.ocam_model.project_points(points_cam)).reshape(-1, 2)
+
+        norms = np.linalg.norm(points_cam, axis=1)
+        safe_norms = np.where(norms < 1e-9, 1.0, norms)
+        angles = np.arccos(np.clip(points_cam[:, 2] / safe_norms, -1.0, 1.0))
+        visible = (
+            (norms >= 0.1)
+            & (angles <= self.fov_limit + 1e-6)
+            & np.all(np.isfinite(projected), axis=1)
+            & (projected[:, 0] >= 0)
+            & (projected[:, 0] < self.width)
+            & (projected[:, 1] >= 0)
+            & (projected[:, 1] < self.height)
+        )
+        return points_cam, visible
+
+    @staticmethod
+    def _face_indices(points_cam):
+        dominant_axis = np.argmax(np.abs(points_cam), axis=1)
+        dominant_value = np.take_along_axis(
+            points_cam, dominant_axis[:, np.newaxis], axis=1
+        ).ravel()
+        # Faces are ordered +X, -X, +Y, -Y, +Z, -Z.
+        return dominant_axis * 2 + (dominant_value < 0)
+
+    def run(self):
+        point_count = self.LiDARPoints3D.shape[1]
+        if point_count == 0 or self.height <= 0 or self.width <= 0:
+            return np.zeros(point_count, dtype=bool)
+
+        points_cam, visible = self._visible_fisheye_points()
+        if not np.any(visible):
+            return visible
+
+        face_indices = self._face_indices(points_cam)
+        result = np.zeros(point_count, dtype=bool)
+
+        center = (self.cube_size - 1) / 2.0
+        focal_length = (self.cube_size - 3) / 2.0
+        intrinsic = np.array(
+            [[focal_length, 0, center], [0, focal_length, center], [0, 0, 1]],
+            dtype=np.float32,
+        )
+
+        for face_index in np.unique(face_indices[visible]):
+            face_rotation = self._FACE_ROTATIONS[face_index]
+            face_extrinsic = face_rotation @ self.extrinsic_LiDAR2Cam
+            face_cleaner = LiDARCleaner(
+                intrinsic,
+                face_extrinsic,
+                self.LiDARPoints3D,
+                self.cube_size,
+                self.cube_size,
+            )
+            face_mask = face_cleaner.run()
+            assigned = visible & (face_indices == face_index)
+            result[assigned] = face_mask[assigned]
+
+        return result

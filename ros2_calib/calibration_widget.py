@@ -64,7 +64,7 @@ from scipy.spatial.transform import Rotation
 
 from . import calibration
 from .common import AppConstants, Colors, UIStyles
-from .lidar_cleaner import LiDARCleaner
+from .lidar_cleaner import FisheyeLiDARCleaner, LiDARCleaner
 
 
 class PointCloudItem(QGraphicsItem):
@@ -467,15 +467,31 @@ class CalibrationWidget(QWidget):
     def run_occlusion_cleaning(self):
         self.progress_bar.setVisible(True)
         QApplication.processEvents()
+        try:
+            extrinsics_3x4 = self.extrinsics[:3, :]
+            if self.ocam_model is not None:
+                h, w = self.cv_image.shape[:2]
+                cleaner = FisheyeLiDARCleaner(
+                    self.ocam_model,
+                    extrinsics_3x4,
+                    self.points_xyz.T,
+                    h,
+                    w,
+                    fov_limit_deg=self.fov_limit_spinbox.value(),
+                )
+            else:
+                K = np.array(self.camerainfo_msg.k).reshape(3, 3)
+                h, w = self.camerainfo_msg.height, self.camerainfo_msg.width
+                cleaner = LiDARCleaner(K, extrinsics_3x4, self.points_xyz.T, h, w)
 
-        K = np.array(self.camerainfo_msg.k).reshape(3, 3)
-        h, w = self.camerainfo_msg.height, self.camerainfo_msg.width
-        extrinsics_3x4 = self.extrinsics[:3, :]
-
-        cleaner = LiDARCleaner(K, extrinsics_3x4, self.points_xyz.T, h, w)
-        self.occlusion_mask = cleaner.run()
-        self.progress_bar.setVisible(False)
-        self.redraw_points()
+            self.occlusion_mask = cleaner.run()
+            num_removed = np.sum(~self.occlusion_mask)
+            print(
+                f"Occlusion cleaning finished. {num_removed} points identified as occluded."
+            )
+            self.redraw_points()
+        finally:
+            self.progress_bar.setVisible(False)
 
     def _on_view_params_changed(self):
         self.apply_view_button.setStyleSheet(UIStyles.HIGHLIGHT_BUTTON)
